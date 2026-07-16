@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { AlertCircle, CheckCircle2, Download, Loader2, Play } from "lucide-react";
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const Card = ({ className = "", ...props }) => (
   <div className={className} style={{ border: "1px solid #e2e8f0", borderRadius: 12, background: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }} {...props} />
 );
@@ -150,6 +152,7 @@ export default function App() {
       const output = [];
 
       for (const job of jobs) {
+        await sleep(1000);
         const row = {
           portal_name: portalName,
           environment,
