@@ -1,4 +1,3 @@
-
 import React, { useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
@@ -64,6 +63,16 @@ const Badge = ({ className = "", children, tone = "slate" }) => {
 
 /* -------------------- helpers -------------------- */
 const DEFAULTS = { pageNumber: 1, pageSize: 50, throttleMs: 1200 };
+const RETENTION_DAYS = 30;
+
+function daysSince(dateStr) {
+  if (!dateStr) return null;
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  const then = Date.UTC(y, m - 1, d);
+  const now = Date.now();
+  return Math.floor((now - then) / (1000 * 60 * 60 * 24));
+}
 
 function buildBaseUrl(portalName, environment) {
   const portal = String(portalName || "").trim().toLowerCase();
@@ -86,6 +95,12 @@ function normalizeJobsResponse(payload) {
 }
 function extractJobId(job) { return job?.job_id ?? job?.jobId ?? job?.id ?? job?.jobID ?? null; }
 function extractJobLabel(job) { return job?.label ?? job?.job_label ?? job?.name ?? job?.title ?? ""; }
+function extractJobCreated(job) {
+  const v = job?.job_create_date ?? job?.jobCreateDate ?? job?.created_at ?? job?.createdAt ?? job?.created ?? job?.date_created ?? null;
+  if (!v) return null;
+  // Return YYYY-MM-DD regardless of timezone/time component
+  return String(v).slice(0, 10);
+}
 
 /**
  * Deep-walks any object/array and returns the first non-empty value for ANY of the given keys.
@@ -188,6 +203,10 @@ export default function App() {
   const computedBaseUrl = useMemo(() => buildBaseUrl(portalName, environment), [portalName, environment]);
   const phase1Ready = portalName.trim() && fromDate && toDate && bearerToken.trim() && computedBaseUrl;
 
+  // Show a soft warning right in the input area when the from-date is beyond retention
+  const fromDateAge = useMemo(() => daysSince(fromDate), [fromDate]);
+  const showRetentionBanner = fromDateAge != null && fromDateAge > RETENTION_DAYS;
+
   async function throttleGate(step) {
     const now = Date.now();
     const gap = now - (lastCallAtRef.current || 0);
@@ -214,6 +233,15 @@ export default function App() {
       if (!bearerToken.trim()) { addLog("error", "Validation", "Bearer token is required."); return; }
       if (!computedBaseUrl) { addLog("error", "Validation", "Unable to construct base URL."); return; }
 
+      const fromAge = daysSince(fromDate);
+      if (fromAge != null && fromAge > RETENTION_DAYS) {
+        addLog(
+          "warning",
+          "Retention",
+          `From date is ${fromAge} days old. Cornerstone Bulk API only retains CSV reports for ${RETENTION_DAYS} days — jobs older than that will list correctly but CSV download will fail with a "report expired" message.`
+        );
+      }
+
       await throttleGate("Step 1");
       addLog("info", "Step 1", `Fetching jobs (page ${pageNumber}, size ${pageSize})…`);
 
@@ -232,7 +260,11 @@ export default function App() {
 
       const raw = normalizeJobsResponse(payload.body);
       const list = raw
-        .map((j) => ({ job_id: extractJobId(j), label: extractJobLabel(j) }))
+        .map((j) => ({
+          job_id: extractJobId(j),
+          label: extractJobLabel(j),
+          created: extractJobCreated(j),
+        }))
         .filter((j) => j.job_id);
 
       setPhase1Meta({ page_number: pageNumber, page_size: pageSize });
@@ -351,7 +383,16 @@ export default function App() {
       updateJobState(jobId, { downloading: false, downloadError: "" });
       addLog("success", "Step 3", `CSV downloaded: ${filename}`, { status: payload.status });
     } catch (error) {
-      const msg = error.status === 429 ? "429 Too Many Requests — increase the throttle delay." : error.message;
+      let msg;
+      const bodyStr = error.body ? (typeof error.body === "string" ? error.body : JSON.stringify(error.body)) : "";
+      if (error.status === 429) {
+        msg = "429 Too Many Requests — increase the throttle delay.";
+      } else if (error.status === 404 || /not\s*found|expired|no\s*report/i.test(bodyStr)) {
+        msg = `Report not available. Cornerstone Bulk API only retains CSV reports for ${RETENTION_DAYS} days — this job is older than that, so the report no longer exists on the server.`;
+      } else {
+        msg = error.message;
+        if (bodyStr) msg += ` — upstream: ${bodyStr.slice(0, 400)}`;
+      }
       updateJobState(jobId, { downloading: false, downloadError: msg });
       addLog("error", "Step 3", `CSV download failed: ${msg}`, { status: error.status });
     }
@@ -367,7 +408,7 @@ export default function App() {
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="text-3xl font-semibold tracking-tight">Cornerstone Bulk API — Lazy, Rate-Safe Workflow</h1>
           <p className="mt-2 text-sm text-slate-600">
-            Collapsed rows show only Job ID and Label. Click a row to lazy-load its full import details into a structured table. A throttle gate prevents 429s.
+            Collapsed rows show only Job ID and Label. Click a row to lazy-load its full import details into a structured table. A throttle gate prevents 429s. Reports older than {RETENTION_DAYS} days are not retained by Cornerstone.
           </p>
         </motion.div>
 
@@ -425,6 +466,15 @@ export default function App() {
               <Label>Bearer Token</Label>
               <Input type="password" placeholder="Paste OAuth access token" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} disabled={phase1Running} autoComplete="off" />
             </div>
+
+            {showRetentionBanner && (
+              <div className="lg:col-span-3" style={{ background: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 10, border: "1px solid #fde68a", fontSize: 13, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <AlertCircle className="h-4 w-4 shrink-0" style={{ marginTop: 2 }} />
+                <div>
+                  <strong>Heads up:</strong> Your From Date is {fromDateAge} days old. Cornerstone Bulk API only retains CSV reports for {RETENTION_DAYS} days. Jobs older than that will still list, but CSV downloads will fail with a "report expired" message.
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -471,6 +521,8 @@ export default function App() {
                         const state = jobState[job.job_id] || {};
                         const isOpen = !!state.open;
                         const imp = state.import;
+                        const age = daysSince(job.created);
+                        const stale = age != null && age > RETENTION_DAYS;
 
                         return (
                           <React.Fragment key={job.job_id}>
@@ -481,7 +533,18 @@ export default function App() {
                               <td style={{ ...td, textAlign: "center" }}>
                                 {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                               </td>
-                              <td style={{ ...td, fontFamily: "ui-monospace, SFMono-Regular, monospace", fontWeight: 600 }}>{job.job_id}</td>
+                              <td style={{ ...td, fontFamily: "ui-monospace, SFMono-Regular, monospace", fontWeight: 600 }}>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                  <span>{job.job_id}</span>
+                                  {age != null && (
+                                    <span title={job.created ? `Created ${job.created}` : ""}>
+                                      <Badge tone={stale ? "amber" : "slate"}>
+                                        {stale ? `Report expired (${age}d old)` : `${age}d old`}
+                                      </Badge>
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
                               <td style={td}>{job.label || <span style={{ color: "#94a3b8" }}>—</span>}</td>
 
                               <td style={{ ...td, fontFamily: "ui-monospace, SFMono-Regular, monospace" }}>
@@ -508,9 +571,14 @@ export default function App() {
 
                               <td style={td} onClick={(e) => e.stopPropagation()}>
                                 {isOpen && imp ? (
-                                  <Button variant="secondary" onClick={() => downloadCsv(job)} disabled={state.downloading}>
+                                  <Button
+                                    variant={stale ? "outline" : "secondary"}
+                                    onClick={() => downloadCsv(job)}
+                                    disabled={state.downloading}
+                                    title={stale ? "Report likely expired (30-day retention). Click to try anyway." : "Download CSV report"}
+                                  >
                                     {state.downloading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-                                    CSV
+                                    {stale ? "CSV (expired?)" : "CSV"}
                                   </Button>
                                 ) : (
                                   <span style={{ color: "#94a3b8" }}>—</span>
