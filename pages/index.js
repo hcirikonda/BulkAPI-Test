@@ -314,12 +314,18 @@ export default function App() {
         expectBlob: false,
       });
       const metrics = extractExecutionSummary(payload.body);
-if (!metrics.import_id) {
-  // Emit a preview of the raw body so we can see where import_id actually lives.
-  let preview = "";
-  try { preview = JSON.stringify(payload.body).slice(0, 800); } catch (_) { preview = String(payload.body).slice(0, 800); }
-  addLog("warning", "Step 2", `Raw response preview (first 800 chars): ${preview}`);
-  throw new Error("No import_id in job details response.");
+      if (!metrics.import_id) {
+        let preview = "";
+        try { preview = JSON.stringify(payload.body, null, 2).slice(0, 2000); }
+        catch (_) { preview = String(payload.body).slice(0, 2000); }
+        updateJobState(jobId, {
+          loadingDetails: false,
+          detailsError: "No import_id found in job details response. See raw response below.",
+          rawPreview: preview,
+        });
+        addLog("warning", "Step 2", `import_id missing for job_id ${jobId}. Raw preview shown inline.`);
+        return;
+      }
 }
       updateJobState(jobId, {
         loadingDetails: false,
@@ -458,7 +464,8 @@ if (!metrics.import_id) {
           </CardContent>
         </Card>
 
-        {/* Step 1 controls + job list */}
+        }
+        {/* Step 1 controls + job list (nested-list rendering) */}
         <Card className="rounded-2xl shadow-sm">
           <CardContent className="p-5">
             <div className="mb-4 flex items-center justify-between">
@@ -468,101 +475,127 @@ if (!metrics.import_id) {
                 <Badge>{jobs.length} job(s)</Badge>
               </div>
             </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <Button onClick={fetchJobsStep1} disabled={!phase1Ready || phase1Running}>
                 {phase1Running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
                 Fetch Jobs
               </Button>
+              <span style={{ fontSize: 12, color: "#64748b" }}>
+                Tip: click a job_id below to load its import details (throttled to avoid 429).
+              </span>
             </div>
 
-            {/* Job rows with expand-to-lazy-load */}
+            {/* Nested-list rendering: Job → (click) → nested import list */}
             {jobs.length > 0 && (
-              <div className="mt-4" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <ul style={{ listStyle: "none", margin: "16px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
                 {jobs.map((job) => {
                   const state = jobState[job.job_id] || {};
                   const isOpen = !!state.open;
                   return (
-                    <div key={job.job_id} style={{ border: "1px solid #e2e8f0", borderRadius: 12, background: "#fff", overflow: "hidden" }}>
-                      {/* Header row */}
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", cursor: "pointer" }} onClick={() => toggleJob(job)}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <li key={job.job_id} style={{ border: "1px solid #e2e8f0", borderRadius: 10, background: "#fff", overflow: "hidden" }}>
+                      {/* Clickable job header */}
+                      <button
+                        onClick={() => toggleJob(job)}
+                        style={{
+                          width: "100%",
+                          background: isOpen ? "#f1f5f9" : "#fff",
+                          border: "none",
+                          padding: "10px 14px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                           {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          <div>
-                            <div style={{ fontWeight: 600 }}>{job.job_id}</div>
-                            <div style={{ fontSize: 12, color: "#64748b" }}>{job.label || <em style={{ color: "#94a3b8" }}>no label</em>}</div>
-                          </div>
-                        </div>
-                        <div>
+                          <span style={{ fontWeight: 600, fontFamily: "ui-monospace, SFMono-Regular, monospace" }}>{job.job_id}</span>
+                          <span style={{ fontSize: 12, color: "#64748b" }}>
+                            {job.label ? `— ${job.label}` : <em style={{ color: "#94a3b8" }}>no label</em>}
+                          </span>
+                        </span>
+                        <span>
                           {state.loadingDetails && <Badge tone="blue">Loading…</Badge>}
                           {state.detailsError && <Badge tone="rose">Error</Badge>}
                           {state.import && !state.detailsError && !state.loadingDetails && <Badge tone="emerald">Import loaded</Badge>}
-                        </div>
-                      </div>
+                        </span>
+                      </button>
 
-                      {/* Dropdown / expand area */}
+                      {/* Nested list rendered directly under this job_id */}
                       {isOpen && (
-                        <div style={{ borderTop: "1px solid #e2e8f0", background: "#f8fafc", padding: 16 }}>
+                        <ul style={{ listStyle: "none", margin: 0, padding: "10px 14px 14px 44px", background: "#f8fafc", borderTop: "1px solid #e2e8f0", display: "flex", flexDirection: "column", gap: 8 }}>
                           {state.loadingDetails && (
-                            <div style={{ display: "inline-flex", alignItems: "center", color: "#475569", fontSize: 14 }}>
+                            <li style={{ color: "#475569", fontSize: 14, display: "inline-flex", alignItems: "center" }}>
                               <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Lazy-loading import details…
-                            </div>
+                            </li>
                           )}
 
                           {state.detailsError && (
-                            <div style={{ color: "#9f1239", fontSize: 14 }}>
+                            <li style={{ color: "#9f1239", fontSize: 14 }}>
                               <AlertCircle className="mr-2 h-4 w-4" style={{ display: "inline", verticalAlign: "text-bottom" }} />
                               {state.detailsError}
-                              <div style={{ marginTop: 8 }}>
+                              <div style={{ marginTop: 6 }}>
                                 <Button variant="outline" onClick={() => loadJobDetails(job)}>Retry</Button>
                               </div>
-                            </div>
+                              {state.rawPreview && (
+                                <details style={{ marginTop: 8 }}>
+                                  <summary style={{ cursor: "pointer", color: "#475569", fontSize: 12 }}>Show raw response (for debugging)</summary>
+                                  <pre style={{ marginTop: 6, background: "#0f172a", color: "#e2e8f0", padding: 10, borderRadius: 8, fontSize: 11, overflow: "auto", maxHeight: 240 }}>
+{state.rawPreview}
+                                  </pre>
+                                </details>
+                              )}
+                            </li>
                           )}
 
                           {state.import && !state.detailsError && (
-                            <div>
-                              <div className="overflow-x-auto rounded-2xl border bg-white">
-                                <table className="min-w-full text-left text-sm">
-                                  <thead className="bg-slate-100 text-xs uppercase text-slate-500">
-                                    <tr>
-                                      <th className="p-3">Import ID</th>
-                                      <th className="p-3">Total Records</th>
-                                      <th className="p-3">Success</th>
-                                      <th className="p-3">Warnings</th>
-                                      <th className="p-3">Errors</th>
-                                      <th className="p-3">Action</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    <tr className="border-t">
-                                      <td className="p-3 font-medium">{state.import.import_id}</td>
-                                      <td className="p-3">{state.import.total_records}</td>
-                                      <td className="p-3" style={{ color: "#047857" }}>{state.import.success_count}</td>
-                                      <td className="p-3" style={{ color: "#b45309" }}>{state.import.warning_count}</td>
-                                      <td className="p-3" style={{ color: "#be123c" }}>{state.import.error_count}</td>
-                                      <td className="p-3">
-                                        <Button variant="secondary" onClick={() => downloadCsv(job)} disabled={state.downloading}>
-                                          {state.downloading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-                                          Download CSV
-                                        </Button>
-                                      </td>
-                                    </tr>
-                                  </tbody>
-                                </table>
-                              </div>
-                              {state.downloadError && (
-                                <div style={{ marginTop: 8, color: "#9f1239", fontSize: 13 }}>
-                                  <AlertCircle className="mr-2 h-4 w-4" style={{ display: "inline", verticalAlign: "text-bottom" }} />
-                                  {state.downloadError}
+                            <li style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, padding: 12 }}>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                                  <div>
+                                    <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>Import ID</div>
+                                    <div style={{ fontFamily: "ui-monospace, SFMono-Regular, monospace", fontWeight: 600 }}>{state.import.import_id}</div>
+                                  </div>
+                                  <Button variant="secondary" onClick={() => downloadCsv(job)} disabled={state.downloading}>
+                                    {state.downloading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+                                    Download CSV
+                                  </Button>
                                 </div>
-                              )}
-                            </div>
+                                <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 8 }}>
+                                  <li style={{ background: "#f8fafc", borderRadius: 8, padding: 8, textAlign: "center" }}>
+                                    <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase" }}>Total</div>
+                                    <div style={{ fontSize: 18, fontWeight: 600 }}>{state.import.total_records}</div>
+                                  </li>
+                                  <li style={{ background: "#ecfdf5", borderRadius: 8, padding: 8, textAlign: "center" }}>
+                                    <div style={{ fontSize: 11, color: "#065f46", textTransform: "uppercase" }}>Success</div>
+                                    <div style={{ fontSize: 18, fontWeight: 600, color: "#047857" }}>{state.import.success_count}</div>
+                                  </li>
+                                  <li style={{ background: "#fffbeb", borderRadius: 8, padding: 8, textAlign: "center" }}>
+                                    <div style={{ fontSize: 11, color: "#92400e", textTransform: "uppercase" }}>Warnings</div>
+                                    <div style={{ fontSize: 18, fontWeight: 600, color: "#b45309" }}>{state.import.warning_count}</div>
+                                  </li>
+                                  <li style={{ background: "#fff1f2", borderRadius: 8, padding: 8, textAlign: "center" }}>
+                                    <div style={{ fontSize: 11, color: "#9f1239", textTransform: "uppercase" }}>Errors</div>
+                                    <div style={{ fontSize: 18, fontWeight: 600, color: "#be123c" }}>{state.import.error_count}</div>
+                                  </li>
+                                </ul>
+                                {state.downloadError && (
+                                  <div style={{ color: "#9f1239", fontSize: 13 }}>
+                                    <AlertCircle className="mr-2 h-4 w-4" style={{ display: "inline", verticalAlign: "text-bottom" }} />
+                                    {state.downloadError}
+                                  </div>
+                                )}
+                              </div>
+                            </li>
                           )}
-                        </div>
+                        </ul>
                       )}
-                    </div>
+                    </li>
                   );
                 })}
-              </div>
+              </ul>
             )}
           </CardContent>
         </Card>
