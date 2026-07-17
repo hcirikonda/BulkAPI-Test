@@ -394,8 +394,8 @@ export default function App() {
       const bodyStr = error.body ? (typeof error.body === "string" ? error.body : JSON.stringify(error.body)) : "";
       if (error.status === 429) {
         msg = "429 Too Many Requests — increase the throttle delay.";
-      } else if (error.status === 404 || /not\s*found|expired|no\s*report/i.test(bodyStr)) {
-        msg = `Report not available. Cornerstone Bulk API only retains CSV reports for ${RETENTION_DAYS} days — this job is older than that, so the report no longer exists on the server.`;
+      } else if (error.status === 404 || error.status === 410) {
+         msg = `Report not available (${error.status}). Cornerstone only retains CSV reports for ${RETENTION_DAYS} days — this import has expired, so the report no longer exists on the server.`;
       } else {
         msg = error.message;
         if (bodyStr) msg += ` — upstream: ${bodyStr.slice(0, 400)}`;
