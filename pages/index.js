@@ -88,15 +88,80 @@ function extractJobId(job) { return job?.job_id ?? job?.jobId ?? job?.id ?? job?
 function extractJobLabel(job) {
   return job?.label ?? job?.job_label ?? job?.name ?? job?.title ?? "";
 }
-function extractImportId(details) { return details?.import_id ?? details?.importId ?? details?.data?.import_id ?? details?.data?.importId ?? null; }
+// Walks any object/array recursively and picks the first non-empty value for any of the given keys.
+function deepFind(obj, keys, seen = new Set()) {
+  if (obj == null || typeof obj !== "object" || seen.has(obj)) return undefined;
+  seen.add(obj);
+  for (const k of keys) {
+    if (obj[k] != null && obj[k] !== "") return obj[k];
+  }
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const v = deepFind(item, keys, seen);
+      if (v !== undefined) return v;
+    }
+  } else {
+    for (const val of Object.values(obj)) {
+      if (val && typeof val === "object") {
+        const v = deepFind(val, keys, seen);
+        if (v !== undefined) return v;
+      }
+    }
+  }
+  return undefined;
+}
+
+// Finds the best "import object" to draw the execution summary from.
+// Covers: response.import, response.imports[0], response.data.imports[0], response.job.imports[0], top-level with import_id, etc.
+function findImportObject(details) {
+  if (!details || typeof details !== "object") return null;
+  const candidates = [];
+  const push = (v) => { if (v && typeof v === "object") candidates.push(v); };
+
+  push(details.import);
+  push(details?.data?.import);
+  push(details?.job?.import);
+  if (Array.isArray(details.imports) && details.imports.length) push(details.imports[0]);
+  if (Array.isArray(details?.data?.imports) && details.data.imports.length) push(details.data.imports[0]);
+  if (Array.isArray(details?.job?.imports) && details.job.imports.length) push(details.job.imports[0]);
+  push(details);
+  push(details.data);
+  push(details.job);
+
+  for (const c of candidates) {
+    if (
+      c.import_id != null || c.importId != null ||
+      c.total_records != null || c.totalRecords != null ||
+      c.success_count != null || c.successCount != null
+    ) return c;
+  }
+  return candidates[0] || null;
+}
+
+function extractImportId(details) {
+  return deepFind(details, ["import_id", "importId", "importID", "ImportId", "ImportID"]) ?? null;
+}
+
 function extractExecutionSummary(details) {
-  const source = details?.data && typeof details.data === "object" ? details.data : details;
+  const src = findImportObject(details) || details || {};
   return {
     import_id: extractImportId(details),
-    total_records: Number(source?.total_records ?? source?.totalRecords ?? source?.total ?? 0),
-    success_count: Number(source?.success_count ?? source?.successCount ?? source?.success ?? 0),
-    warning_count: Number(source?.warning_count ?? source?.warningCount ?? source?.warnings ?? 0),
-    error_count: Number(source?.error_count ?? source?.errorCount ?? source?.errors ?? 0),
+    total_records: Number(
+      deepFind(src, ["total_records", "totalRecords", "total"]) ??
+      deepFind(details, ["total_records", "totalRecords", "total"]) ?? 0
+    ),
+    success_count: Number(
+      deepFind(src, ["success_count", "successCount", "success"]) ??
+      deepFind(details, ["success_count", "successCount", "success"]) ?? 0
+    ),
+    warning_count: Number(
+      deepFind(src, ["warning_count", "warningCount", "warnings"]) ??
+      deepFind(details, ["warning_count", "warningCount", "warnings"]) ?? 0
+    ),
+    error_count: Number(
+      deepFind(src, ["error_count", "errorCount", "errors"]) ??
+      deepFind(details, ["error_count", "errorCount", "errors"]) ?? 0
+    ),
   };
 }
 function fileNameSafe(value) { return String(value || "unknown").replace(/[^a-zA-Z0-9._-]/g, "_"); }
@@ -249,7 +314,13 @@ export default function App() {
         expectBlob: false,
       });
       const metrics = extractExecutionSummary(payload.body);
-      if (!metrics.import_id) throw new Error("No import_id in job details response.");
+if (!metrics.import_id) {
+  // Emit a preview of the raw body so we can see where import_id actually lives.
+  let preview = "";
+  try { preview = JSON.stringify(payload.body).slice(0, 800); } catch (_) { preview = String(payload.body).slice(0, 800); }
+  addLog("warning", "Step 2", `Raw response preview (first 800 chars): ${preview}`);
+  throw new Error("No import_id in job details response.");
+}
       updateJobState(jobId, {
         loadingDetails: false,
         detailsError: "",
