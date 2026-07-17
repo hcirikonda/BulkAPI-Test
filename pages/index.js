@@ -98,14 +98,9 @@ function extractJobLabel(job) { return job?.label ?? job?.job_label ?? job?.name
 function extractJobCreated(job) {
   const v = job?.job_create_date ?? job?.jobCreateDate ?? job?.created_at ?? job?.createdAt ?? job?.created ?? job?.date_created ?? null;
   if (!v) return null;
-  // Return YYYY-MM-DD regardless of timezone/time component
   return String(v).slice(0, 10);
 }
 
-/**
- * Deep-walks any object/array and returns the first non-empty value for ANY of the given keys.
- * Case-insensitive. Kept as a fallback for unexpected response shapes.
- */
 function deepFind(obj, keys, seen = new Set()) {
   if (obj == null || typeof obj !== "object" || seen.has(obj)) return undefined;
   seen.add(obj);
@@ -132,17 +127,26 @@ function deepFind(obj, keys, seen = new Set()) {
   return undefined;
 }
 
-// Your API returns: { imports: [{ id, total_records, successful_records, successful_records_with_warnings, error_records }], label }
 function extractImportId(details) {
   const imp = Array.isArray(details?.imports) && details.imports.length ? details.imports[0] : null;
   if (imp?.id) return imp.id;
   return deepFind(details, ["import_id", "importId", "importID"]) ?? null;
 }
 
+function extractImportLabel(details) {
+  // Prefer job-level label; fall back to import-level label if job-level is missing
+  const imp = Array.isArray(details?.imports) && details.imports.length ? details.imports[0] : null;
+  return (
+    details?.label ?? details?.job_label ?? details?.name ?? details?.title ??
+    imp?.label ?? imp?.name ?? ""
+  );
+}
+
 function extractExecutionSummary(details) {
   const imp = Array.isArray(details?.imports) && details.imports.length ? details.imports[0] : (details || {});
   return {
     import_id: extractImportId(details),
+    label: extractImportLabel(details),
     total_records: Number(imp.total_records ?? imp.totalRecords ?? imp.total ?? 0),
     success_count: Number(imp.successful_records ?? imp.success_count ?? imp.successCount ?? 0),
     warning_count: Number(imp.successful_records_with_warnings ?? imp.warning_count ?? imp.warningCount ?? 0),
@@ -203,9 +207,11 @@ export default function App() {
   const computedBaseUrl = useMemo(() => buildBaseUrl(portalName, environment), [portalName, environment]);
   const phase1Ready = portalName.trim() && fromDate && toDate && bearerToken.trim() && computedBaseUrl;
 
-  // Show a soft warning right in the input area when the from-date is beyond retention
   const fromDateAge = useMemo(() => daysSince(fromDate), [fromDate]);
   const showRetentionBanner = fromDateAge != null && fromDateAge > RETENTION_DAYS;
+
+  // Compact table view: only show metric columns once at least one row is expanded
+  const anyRowExpanded = useMemo(() => Object.values(jobState).some((s) => s?.open), [jobState]);
 
   async function throttleGate(step) {
     const now = Date.now();
@@ -327,6 +333,7 @@ export default function App() {
         rawPreview: "",
         import: {
           import_id: metrics.import_id,
+          label: metrics.label || job.label || "",
           total_records: metrics.total_records,
           success_count: metrics.success_count,
           warning_count: metrics.warning_count,
@@ -387,8 +394,8 @@ export default function App() {
       const bodyStr = error.body ? (typeof error.body === "string" ? error.body : JSON.stringify(error.body)) : "";
       if (error.status === 429) {
         msg = "429 Too Many Requests — increase the throttle delay.";
-      } else if (error.status === 404 || /not\s*found|expired|no\s*report/i.test(bodyStr)) {
-        msg = `Report not available. Cornerstone Bulk API only retains CSV reports for ${RETENTION_DAYS} days — this job is older than that, so the report no longer exists on the server.`;
+      } else if (error.status === 404 || error.status === 410) {
+        msg = `Report not available (${error.status}). Cornerstone only retains CSV reports for ${RETENTION_DAYS} days — this import has expired, so the report no longer exists on the server.`;
       } else {
         msg = error.message;
         if (bodyStr) msg += ` — upstream: ${bodyStr.slice(0, 400)}`;
@@ -402,13 +409,16 @@ export default function App() {
   const th = { padding: "10px 12px", textAlign: "left", fontSize: 11, textTransform: "uppercase", color: "#64748b", letterSpacing: 0.5, background: "#f1f5f9", borderBottom: "1px solid #e2e8f0", whiteSpace: "nowrap" };
   const td = { padding: "12px", borderBottom: "1px solid #e2e8f0", fontSize: 14, verticalAlign: "middle" };
 
+  // Total column count depends on whether ANY row is expanded
+  const totalCols = anyRowExpanded ? 8 : 3;
+
   return (
     <div className="min-h-screen bg-slate-50 p-6 text-slate-900">
       <div className="mx-auto max-w-7xl space-y-6">
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}>
-          <h1 className="text-3xl font-semibold tracking-tight">Cornerstone Bulk API — Lazy, Rate-Safe Workflow</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Cornerstone Bulk Import Report Explorer</h1>
           <p className="mt-2 text-sm text-slate-600">
-            Collapsed rows show only Job ID and Label. Click a row to lazy-load its full import details into a structured table. A throttle gate prevents 429s. Reports older than {RETENTION_DAYS} days are not retained by Cornerstone.
+            Click a row to lazy-load its full import details into a structured table.
           </p>
         </motion.div>
 
@@ -495,25 +505,29 @@ export default function App() {
                 Fetch Jobs
               </Button>
               <span style={{ fontSize: 12, color: "#64748b" }}>
-                Click a row to load import details. Throttle delay separates calls to avoid 429.
+                {anyRowExpanded
+                  ? "Full details visible. Collapse rows to return to the compact list view."
+                  : "Compact view — click any row to expand and load its import details."}
               </span>
             </div>
 
             {jobs.length > 0 && (
               <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
                 <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: anyRowExpanded ? 900 : 480 }}>
                     <thead>
                       <tr>
                         <th style={{ ...th, width: 32 }}></th>
                         <th style={th}>Job ID</th>
-                        <th style={th}>Label</th>
-                        <th style={th}>Import ID</th>
-                        <th style={th}>Total Records</th>
-                        <th style={th}>Success</th>
-                        <th style={th}>Warnings</th>
-                        <th style={th}>Errors</th>
-                        <th style={th}>Action</th>
+                        {anyRowExpanded && (
+                          <>
+                            <th style={th}>Total Records</th>
+                            <th style={th}>Success</th>
+                            <th style={th}>Warnings</th>
+                            <th style={th}>Errors</th>
+                          </>
+                        )}
+                        <th style={{ ...th, textAlign: "right" }}>Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -526,6 +540,7 @@ export default function App() {
 
                         return (
                           <React.Fragment key={job.job_id}>
+                            {/* Row 1: compact summary row */}
                             <tr
                               onClick={() => toggleJob(job)}
                               style={{ cursor: "pointer", background: isOpen ? "#f8fafc" : "#fff" }}
@@ -534,7 +549,7 @@ export default function App() {
                                 {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                               </td>
                               <td style={{ ...td, fontFamily: "ui-monospace, SFMono-Regular, monospace", fontWeight: 600 }}>
-                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                   <span>{job.job_id}</span>
                                   {age != null && (
                                     <span title={job.created ? `Created ${job.created}` : ""}>
@@ -545,31 +560,26 @@ export default function App() {
                                   )}
                                 </div>
                               </td>
-                              <td style={td}>{job.label || <span style={{ color: "#94a3b8" }}>—</span>}</td>
 
-                              <td style={{ ...td, fontFamily: "ui-monospace, SFMono-Regular, monospace" }}>
-                                {isOpen && state.loadingDetails && <Loader2 className="h-4 w-4 animate-spin" />}
-                                {isOpen && imp && imp.import_id}
-                                {(!isOpen || (!state.loadingDetails && !imp)) && <span style={{ color: "#94a3b8" }}>—</span>}
-                              </td>
+                              {/* Metric columns only render when compact view is off */}
+                              {anyRowExpanded && (
+                                <>
+                                  <td style={td}>
+                                    {isOpen && imp ? imp.total_records : (isOpen && state.loadingDetails ? <Loader2 className="h-4 w-4 animate-spin" /> : "")}
+                                  </td>
+                                  <td style={{ ...td, color: isOpen && imp ? "#047857" : "#0f172a", fontWeight: isOpen && imp ? 600 : 400 }}>
+                                    {isOpen && imp ? imp.success_count : ""}
+                                  </td>
+                                  <td style={{ ...td, color: isOpen && imp ? "#b45309" : "#0f172a", fontWeight: isOpen && imp ? 600 : 400 }}>
+                                    {isOpen && imp ? imp.warning_count : ""}
+                                  </td>
+                                  <td style={{ ...td, color: isOpen && imp ? "#be123c" : "#0f172a", fontWeight: isOpen && imp ? 600 : 400 }}>
+                                    {isOpen && imp ? imp.error_count : ""}
+                                  </td>
+                                </>
+                              )}
 
-                              <td style={td}>
-                                {isOpen && imp ? imp.total_records : <span style={{ color: "#94a3b8" }}>—</span>}
-                              </td>
-
-                              <td style={{ ...td, color: isOpen && imp ? "#047857" : "#94a3b8", fontWeight: isOpen && imp ? 600 : 400 }}>
-                                {isOpen && imp ? imp.success_count : "—"}
-                              </td>
-
-                              <td style={{ ...td, color: isOpen && imp ? "#b45309" : "#94a3b8", fontWeight: isOpen && imp ? 600 : 400 }}>
-                                {isOpen && imp ? imp.warning_count : "—"}
-                              </td>
-
-                              <td style={{ ...td, color: isOpen && imp ? "#be123c" : "#94a3b8", fontWeight: isOpen && imp ? 600 : 400 }}>
-                                {isOpen && imp ? imp.error_count : "—"}
-                              </td>
-
-                              <td style={td} onClick={(e) => e.stopPropagation()}>
+                              <td style={{ ...td, textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
                                 {isOpen && imp ? (
                                   <Button
                                     variant={stale ? "outline" : "secondary"}
@@ -581,29 +591,64 @@ export default function App() {
                                     {stale ? "CSV (expired?)" : "CSV"}
                                   </Button>
                                 ) : (
-                                  <span style={{ color: "#94a3b8" }}>—</span>
+                                  <Button
+                                    variant="outline"
+                                    onClick={(e) => { e.stopPropagation(); toggleJob(job); }}
+                                    title={isOpen ? "Collapse" : "Expand to load details"}
+                                  >
+                                    {isOpen ? <ChevronDown className="mr-2 h-4 w-4" /> : <ChevronRight className="mr-2 h-4 w-4" />}
+                                    {isOpen ? "Collapse" : "Expand"}
+                                  </Button>
                                 )}
                               </td>
                             </tr>
 
-                            {isOpen && (state.detailsError || state.downloadError) && (
+                            {/* Row 2: expanded details — shows Label + Import ID prominently */}
+                            {isOpen && (
                               <tr>
                                 <td style={{ ...td, borderBottom: "1px solid #e2e8f0" }}></td>
-                                <td colSpan={8} style={{ ...td, borderBottom: "1px solid #e2e8f0", background: "#fff1f2", color: "#9f1239" }}>
-                                  <AlertCircle className="mr-2 h-4 w-4" style={{ display: "inline", verticalAlign: "text-bottom" }} />
-                                  {state.detailsError || state.downloadError}
-                                  {state.detailsError && (
-                                    <div style={{ marginTop: 8 }}>
-                                      <Button variant="outline" onClick={() => loadJobDetails(job)}>Retry</Button>
+                                <td colSpan={totalCols - 1} style={{ ...td, background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+                                  {state.loadingDetails && (
+                                    <div style={{ display: "inline-flex", alignItems: "center", color: "#475569", fontSize: 14 }}>
+                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading import details…
                                     </div>
                                   )}
-                                  {state.rawPreview && (
-                                    <details style={{ marginTop: 8 }}>
-                                      <summary style={{ cursor: "pointer", color: "#475569", fontSize: 12 }}>Show raw response</summary>
-                                      <pre style={{ marginTop: 6, background: "#0f172a", color: "#e2e8f0", padding: 10, borderRadius: 8, fontSize: 11, overflow: "auto", maxHeight: 240 }}>
+
+                                  {imp && (
+                                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+                                      <div>
+                                        <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>Label</div>
+                                        <div style={{ fontSize: 14, fontWeight: 600, color: "#0f172a", wordBreak: "break-word" }}>
+                                          {imp.label || job.label || <span style={{ color: "#94a3b8", fontWeight: 400 }}>No label provided</span>}
+                                        </div>
+                                      </div>
+                                      <div>
+                                        <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>Import ID</div>
+                                        <div style={{ fontSize: 14, fontWeight: 600, fontFamily: "ui-monospace, SFMono-Regular, monospace", color: "#0f172a", wordBreak: "break-all" }}>
+                                          {imp.import_id}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {(state.detailsError || state.downloadError) && (
+                                    <div style={{ marginTop: imp ? 12 : 0, background: "#fff1f2", color: "#9f1239", padding: 10, borderRadius: 8, border: "1px solid #fecdd3" }}>
+                                      <AlertCircle className="mr-2 h-4 w-4" style={{ display: "inline", verticalAlign: "text-bottom" }} />
+                                      {state.detailsError || state.downloadError}
+                                      {state.detailsError && (
+                                        <div style={{ marginTop: 8 }}>
+                                          <Button variant="outline" onClick={() => loadJobDetails(job)}>Retry</Button>
+                                        </div>
+                                      )}
+                                      {state.rawPreview && (
+                                        <details style={{ marginTop: 8 }}>
+                                          <summary style={{ cursor: "pointer", color: "#475569", fontSize: 12 }}>Show raw response</summary>
+                                          <pre style={{ marginTop: 6, background: "#0f172a", color: "#e2e8f0", padding: 10, borderRadius: 8, fontSize: 11, overflow: "auto", maxHeight: 240 }}>
 {state.rawPreview}
-                                      </pre>
-                                    </details>
+                                          </pre>
+                                        </details>
+                                      )}
+                                    </div>
                                   )}
                                 </td>
                               </tr>
