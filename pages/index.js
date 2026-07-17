@@ -326,7 +326,6 @@ export default function App() {
         addLog("warning", "Step 2", `import_id missing for job_id ${jobId}. Raw preview shown inline.`);
         return;
       }
-}
       updateJobState(jobId, {
         loadingDetails: false,
         detailsError: "",
@@ -464,7 +463,6 @@ export default function App() {
           </CardContent>
         </Card>
 
-        }
         {/* Step 1 controls + job list (nested-list rendering) */}
         <Card className="rounded-2xl shadow-sm">
           <CardContent className="p-5">
